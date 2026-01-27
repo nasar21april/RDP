@@ -50,6 +50,11 @@ jobs:
         Add-LocalGroupMember -Group "Administrators" -Member "RDP"
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
 
+        if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
+          Write-Error "User creation failed"
+          exit 1
+        }
+
         echo "RDP_CREDS=RDP / $password" >> $env:GITHUB_ENV
 
     - name: Install Tailscale
@@ -96,45 +101,15 @@ jobs:
 
         Write-Host "TCP connectivity successful!"
 
-    # =========================
-    # BROWSER ACCESS
-    # =========================
-
-    - name: Install & Start Docker
+    - name: Maintain Connection
       run: |
-        choco install docker-desktop -y
-        Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe"
-        refreshenv
+        Write-Host "========== RDP ACCESS =========="
+        Write-Host "Address : $env:TAILSCALE_IP"
+        Write-Host "Username: RDP"
+        Write-Host "Password: $env:RDP_CREDS"
+        Write-Host "================================"
 
-        $tries = 0
-        do {
-          Start-Sleep 10
-          $tries++
-          docker info > $null 2>&1
-        } until ($LASTEXITCODE -eq 0 -or $tries -ge 30)
-
-        if ($LASTEXITCODE -ne 0) {
-          Write-Error "Docker failed to start"
-          exit 1
+        while ($true) {
+          Write-Host "[$(Get-Date)] RDP Active – Ctrl+C to stop"
+          Start-Sleep 300
         }
-
-        Write-Host "Docker is running"
-
-    - name: Start Apache Guacamole
-      run: |
-        docker run -d --name guacd guacamole/guacd
-
-        docker run -d --name guacamole `
-          --link guacd:guacd `
-          -e GUACD_HOSTNAME=guacd `
-          -e GUACD_PORT=4822 `
-          -p 8080:8080 `
-          guacamole/guacamole
-
-    - name: Start Cloudflared Tunnel (Browser RDP)
-      run: |
-        Invoke-WebRequest `
-          https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe `
-          -OutFile cloudflared.exe
-
-        .\cloudflared.exe tunnel --url http://localhost:8080

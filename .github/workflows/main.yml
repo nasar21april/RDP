@@ -97,20 +97,15 @@ jobs:
         Write-Host "TCP connectivity successful!"
 
     # =========================
-    # BROWSER ACCESS ADDITIONS
+    # BROWSER ACCESS
     # =========================
 
     - name: Install & Start Docker
       run: |
         choco install docker-desktop -y
-
-        # Start Docker Desktop
         Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe"
-
-        # Refresh environment variables
         refreshenv
 
-        # Wait for Docker engine to be ready
         $tries = 0
         do {
           Start-Sleep 10
@@ -125,9 +120,16 @@ jobs:
 
         Write-Host "Docker is running"
 
-    # =========================
-    # MUST BE LAST STEP
-    # =========================
+    - name: Start Apache Guacamole
+      run: |
+        docker run -d --name guacd guacamole/guacd
+
+        docker run -d --name guacamole `
+          --link guacd:guacd `
+          -e GUACD_HOSTNAME=guacd `
+          -e GUACD_PORT=4822 `
+          -p 8080:8080 `
+          guacamole/guacamole
 
     - name: Start Cloudflared Tunnel (Browser RDP)
       run: |
@@ -136,4 +138,3 @@ jobs:
           -OutFile cloudflared.exe
 
         .\cloudflared.exe tunnel --url http://localhost:8080
-

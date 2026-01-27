@@ -137,10 +137,11 @@ jobs:
         Write-Host "RDP IP       : $env:TAILSCALE_IP"
         Write-Host "RDP User     : RDP"
         Write-Host "RDP Password : $env:RDP_CREDS"
-        Write-Host "Guacamole    : Check logs for https://*.trycloudflare.com"
+        Write-Host "Browser RDP  : Watch logs above for https://*.trycloudflare.com"
         Write-Host "================================"
 
         while ($true) {
           Write-Host "[$(Get-Date)] RDP + Browser Access Active"
           Start-Sleep 300
         }
+

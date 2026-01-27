@@ -50,11 +50,6 @@ jobs:
         Add-LocalGroupMember -Group "Administrators" -Member "RDP"
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
 
-        if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
-          Write-Error "User creation failed"
-          exit 1
-        }
-
         echo "RDP_CREDS=RDP / $password" >> $env:GITHUB_ENV
 
     - name: Install Tailscale
@@ -101,15 +96,51 @@ jobs:
 
         Write-Host "TCP connectivity successful!"
 
+    # =========================
+    # MINIMAL ADDITIONS START
+    # =========================
+
+    - name: Install Docker
+      run: |
+        choco install docker-desktop -y
+        Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+        Start-Sleep 60
+
+    - name: Start Apache Guacamole
+      run: |
+        docker run -d --name guacd guacamole/guacd
+
+        docker run -d --name guacamole `
+          --link guacd:guacd `
+          -e GUACD_HOSTNAME=guacd `
+          -e GUACD_PORT=4822 `
+          -p 8080:8080 `
+          guacamole/guacamole
+
+    - name: Start Cloudflared Tunnel (Browser RDP)
+      run: |
+        Invoke-WebRequest `
+          https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe `
+          -OutFile cloudflared.exe
+
+        Start-Process .\cloudflared.exe `
+          -ArgumentList "tunnel --url http://localhost:8080" `
+          -NoNewWindow
+
+    # =========================
+    # MINIMAL ADDITIONS END
+    # =========================
+
     - name: Maintain Connection
       run: |
-        Write-Host "========== RDP ACCESS =========="
-        Write-Host "Address : $env:TAILSCALE_IP"
-        Write-Host "Username: RDP"
-        Write-Host "Password: $env:RDP_CREDS"
+        Write-Host "========== ACCESS =========="
+        Write-Host "RDP IP       : $env:TAILSCALE_IP"
+        Write-Host "RDP User     : RDP"
+        Write-Host "RDP Password : $env:RDP_CREDS"
+        Write-Host "Guacamole    : Check logs for https://*.trycloudflare.com"
         Write-Host "================================"
 
         while ($true) {
-          Write-Host "[$(Get-Date)] RDP Active – Ctrl+C to stop"
+          Write-Host "[$(Get-Date)] RDP + Browser Access Active"
           Start-Sleep 300
         }

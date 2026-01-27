@@ -100,30 +100,30 @@ jobs:
     # BROWSER ACCESS ADDITIONS
     # =========================
 
-    - name: Install Docker
+    - name: Install & Start Docker
       run: |
         choco install docker-desktop -y
+
+        # Start Docker Desktop
         Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe"
-        Start-Sleep 90
 
-    - name: Start Apache Guacamole
-      run: |
-        docker run -d --name guacd guacamole/guacd
+        # Refresh environment variables
+        refreshenv
 
-        docker run -d --name guacamole `
-          --link guacd:guacd `
-          -e GUACD_HOSTNAME=guacd `
-          -e GUACD_PORT=4822 `
-          -p 8080:8080 `
-          guacamole/guacamole
+        # Wait for Docker engine to be ready
+        $tries = 0
+        do {
+          Start-Sleep 10
+          $tries++
+          docker info > $null 2>&1
+        } until ($LASTEXITCODE -eq 0 -or $tries -ge 30)
 
-    - name: Start Cloudflared Tunnel (Browser RDP)
-      run: |
-        Invoke-WebRequest `
-          https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe `
-          -OutFile cloudflared.exe
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Docker failed to start"
+          exit 1
+        }
 
-        .\cloudflared.exe tunnel --url http://localhost:8080
+        Write-Host "Docker is running"
 
     # =========================
     # MUST BE LAST STEP

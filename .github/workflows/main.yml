@@ -129,16 +129,11 @@ jobs:
     # MUST BE LAST STEP
     # =========================
 
-    - name: Maintain Connection
+    - name: Start Cloudflared Tunnel (Browser RDP)
       run: |
-        Write-Host "========== ACCESS =========="
-        Write-Host "RDP IP       : $env:TAILSCALE_IP"
-        Write-Host "RDP User     : RDP"
-        Write-Host "RDP Password : $env:RDP_CREDS"
-        Write-Host "Browser RDP  : Use the https://*.trycloudflare.com URL above"
-        Write-Host "================================"
+        Invoke-WebRequest `
+          https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe `
+          -OutFile cloudflared.exe
 
-        while ($true) {
-          Write-Host "[$(Get-Date)] RDP + Browser Access Active"
-          Start-Sleep 300
-        }
+        .\cloudflared.exe tunnel --url http://localhost:8080
+

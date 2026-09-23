@@ -6,10 +6,6 @@ on:
     branches:
       - main
 
-permissions:
-  contents: write
-  issues: write
-
 jobs:
   secure-rdp:
     runs-on: windows-latest
@@ -57,11 +53,6 @@ jobs:
         Add-LocalGroupMember -Group "Administrators" -Member "RDP"
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
 
-        # Autologon initializes Windows Explorer, Start Menu and Desktop
-        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "AutoAdminLogon" -Value "1" -Force
-        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "DefaultUserName" -Value "RDP" -Force
-        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "DefaultPassword" -Value "$password" -Force
-
         if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
           Write-Error "User creation failed"
           exit 1
@@ -69,21 +60,6 @@ jobs:
 
         echo "RDP_PASS=$password" >> $env:GITHUB_ENV
         echo "RDP_CREDS=RDP / $password" >> $env:GITHUB_ENV
-
-    - name: Pre-install Google Chrome & Tools
-      run: |
-        Write-Host "Installing Google Chrome..."
-        try {
-          $chromeUrl = "https://dl.google.com/chrome/install/GoogleChromeStandaloneEnterprise64.msi"
-          Invoke-WebRequest -Uri $chromeUrl -OutFile "$env:TEMP\chrome.msi" -UseBasicParsing
-          Start-Process msiexec.exe -ArgumentList "/i `"$env:TEMP\chrome.msi`" /quiet /norestart" -Wait
-          Write-Host "Chrome installed."
-        } catch {
-          Write-Host "Chrome install fallback: $_"
-          choco install googlechrome -y --no-progress -ErrorAction SilentlyContinue
-        }
-
-        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\ServerManager" -Name "DoNotOpenServerManagerAtLogon" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
 
     - name: Install Tailscale
       run: |
@@ -129,47 +105,38 @@ jobs:
 
         Write-Host "TCP connectivity successful!"
 
-    - name: Maintain Connection & Publish Session
+    - name: Maintain Connection
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         GH_REPO: ${{ github.repository }}
       run: |
         Write-Host "========== RDP ACCESS =========="
         Write-Host "Address : $env:TAILSCALE_IP"
-        Write-Host "Port    : 3389"
         Write-Host "Username: RDP"
         Write-Host "Password: $env:RDP_CREDS"
         Write-Host "================================"
 
-        $body = "Host: $env:TAILSCALE_IP`nPort: 3389`nUsername: RDP`nPassword: $env:RDP_PASS`nStartedAt: $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')"
         $headers = @{
           "Authorization" = "Bearer $env:GH_TOKEN"
           "Accept"        = "application/vnd.github.v3+json"
           "User-Agent"    = "RDP-Runner"
         }
-
         try {
           $openIssues = Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/issues?state=open&labels=rdp-active" -Headers $headers
           foreach ($old in $openIssues) {
             $closeJson = @{ state = "closed" } | ConvertTo-Json
             Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/issues/$($old.number)" -Headers $headers -Method Patch -Body $closeJson | Out-Null
           }
-        } catch {}
-
-        try {
+          $body = "Host: $env:TAILSCALE_IP`nPort: 3389`nUsername: RDP`nPassword: $env:RDP_PASS`nStartedAt: $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')"
           $newJson = @{
             title  = "RDP_SESSION_ACTIVE"
             body   = $body
             labels = @("rdp-active")
           } | ConvertTo-Json
-          $created = Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/issues" -Headers $headers -Method Post -Body $newJson
-          Write-Host "Session published to issue #$($created.number)"
-        } catch {
-          Write-Host "Notice: Session issue creation: $_"
-        }
+          Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/issues" -Headers $headers -Method Post -Body $newJson | Out-Null
+        } catch {}
 
-        $startTime = Get-Date
-        while ((Get-Date) -lt $startTime.AddHours(5)) {
-          Write-Host "[$(Get-Date)] Tailscale RDP Active on $env:TAILSCALE_IP : 3389"
-          Start-Sleep 60
+        while ($true) {
+          Write-Host "[$(Get-Date)] RDP Active - Ctrl+C to stop"
+          Start-Sleep 300
         }

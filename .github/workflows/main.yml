@@ -53,17 +53,24 @@ jobs:
           -RedirectStandardError "$env:TEMP\bore_err.log" `
           -PassThru -NoNewWindow
 
-        Start-Sleep 5
-        $log = Get-Content "$env:TEMP\bore.log" -Raw
-        Write-Host "Tunnel Log: $log"
-
-        if ($log -match "listening at ([a-zA-Z0-9\.\-]+):(\d+)") {
-          $hostName = $matches[1]
-          $port = $matches[2]
-          echo "TUNNEL_HOST=$hostName" >> $env:GITHUB_ENV
-          echo "TUNNEL_PORT=$port" >> $env:GITHUB_ENV
-          Write-Host "Direct Public Address: ${hostName}:${port}"
-        } else {
+        $matched = $false
+        for ($i = 0; $i -lt 15; $i++) {
+          Start-Sleep 1
+          $log = ""
+          if (Test-Path "$env:TEMP\bore.log") { $log += Get-Content "$env:TEMP\bore.log" -Raw }
+          if (Test-Path "$env:TEMP\bore_err.log") { $log += Get-Content "$env:TEMP\bore_err.log" -Raw }
+          if ($log -match "listening at ([a-zA-Z0-9\.\-]+):(\d+)") {
+            $hostName = $matches[1]
+            $port = $matches[2]
+            echo "TUNNEL_HOST=$hostName" >> $env:GITHUB_ENV
+            echo "TUNNEL_PORT=$port" >> $env:GITHUB_ENV
+            Write-Host "Direct Public Address: ${hostName}:${port}"
+            $matched = $true
+            break
+          }
+        }
+        if (-not $matched) {
+          Write-Host "Tunnel Log: $log"
           Write-Error "Could not start direct tunnel"
           exit 1
         }

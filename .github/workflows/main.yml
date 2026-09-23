@@ -3,6 +3,10 @@ name: RDP
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+  issues: write
+
 jobs:
   secure-rdp:
     runs-on: windows-latest
@@ -11,105 +15,84 @@ jobs:
     steps:
     - name: Configure Core RDP Settings
       run: |
-        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
-          -Name "fDenyTSConnections" -Value 0 -Force
-
-        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
-          -Name "UserAuthentication" -Value 0 -Force
-
-        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
-          -Name "SecurityLayer" -Value 0 -Force
-
-        netsh advfirewall firewall delete rule name="RDP-Tailscale"
-        netsh advfirewall firewall add rule name="RDP-Tailscale" `
-          dir=in action=allow protocol=TCP localport=3389
-
+        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Force
+        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 0 -Force
+        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "SecurityLayer" -Value 0 -Force
+        netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
         Restart-Service -Name TermService -Force
 
     - name: Create RDP User with Secure Password
       run: |
         Add-Type -AssemblyName System.Security
-
         $charSet = @{
           Upper   = [char[]](65..90)
           Lower   = [char[]](97..122)
           Number  = [char[]](48..57)
           Special = ([char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126))
         }
-
         $raw = @()
         $raw += $charSet.Upper   | Get-Random -Count 4
         $raw += $charSet.Lower   | Get-Random -Count 4
         $raw += $charSet.Number  | Get-Random -Count 4
         $raw += $charSet.Special | Get-Random -Count 4
-
         $password = ($raw | Get-Random -Count $raw.Count) -join ''
         $secure   = ConvertTo-SecureString $password -AsPlainText -Force
-
         New-LocalUser -Name "RDP" -Password $secure -AccountNeverExpires
         Add-LocalGroupMember -Group "Administrators" -Member "RDP"
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+        echo "RDP_PASS=$password" >> $env:GITHUB_ENV
 
-        if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
-          Write-Error "User creation failed"
+    - name: Start Direct Cloud Tunnel
+      run: |
+        Invoke-WebRequest "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-pc-windows-msvc.zip" -OutFile "$env:TEMP\bore.zip"
+        Expand-Archive -Path "$env:TEMP\bore.zip" -DestinationPath "$env:TEMP\bore" -Force
+        $borePath = "$env:TEMP\bore\bore.exe"
+
+        $proc = Start-Process -FilePath $borePath -ArgumentList "local 3389 --to bore.pub" `
+          -RedirectStandardOutput "$env:TEMP\bore.log" `
+          -RedirectStandardError "$env:TEMP\bore_err.log" `
+          -PassThru -NoNewWindow
+
+        Start-Sleep 5
+        $log = Get-Content "$env:TEMP\bore.log" -Raw
+        Write-Host "Tunnel Log: $log"
+
+        if ($log -match "listening at ([a-zA-Z0-9\.\-]+):(\d+)") {
+          $hostName = $matches[1]
+          $port = $matches[2]
+          echo "TUNNEL_HOST=$hostName" >> $env:GITHUB_ENV
+          echo "TUNNEL_PORT=$port" >> $env:GITHUB_ENV
+          Write-Host "Direct Public Address: ${hostName}:${port}"
+        } else {
+          Write-Error "Could not start direct tunnel"
           exit 1
         }
 
-        echo "RDP_CREDS=RDP / $password" >> $env:GITHUB_ENV
-
-    - name: Install Tailscale
-      run: |
-        $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-        $msi = "$env:TEMP\tailscale.msi"
-
-        Invoke-WebRequest -Uri $url -OutFile $msi
-        Start-Process msiexec.exe `
-          -ArgumentList "/i `"$msi`" /quiet /norestart" `
-          -Wait
-
-        Remove-Item $msi -Force
-
-    - name: Establish Tailscale Connection
+    - name: Publish Session Details to App
       env:
-        TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        & "C:\Program Files\Tailscale\tailscale.exe" up `
-          --authkey=$env:TAILSCALE_AUTH_KEY `
-          --hostname=github-rdp `
-          --unattended
+        $body = "Host: $env:TUNNEL_HOST`nPort: $env:TUNNEL_PORT`nUsername: RDP`nPassword: $env:RDP_PASS`nStartedAt: $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')"
 
-    - name: Wait for Tailscale IP
-      run: |
-        $tries = 0
-        do {
-          $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-          Start-Sleep 5
-          $tries++
-        } until ($ip -or $tries -ge 10)
+        try {
+          $existing = gh issue list --label "rdp-active" --state open --json number | ConvertFrom-Json
+          foreach ($iss in $existing) {
+            gh issue close $iss.number
+          }
+        } catch {}
 
-        echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
-
-    - name: Verify RDP Accessibility
-      run: |
-        Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-
-        $test = Test-NetConnection $env:TAILSCALE_IP -Port 3389
-        if (-not $test.TcpTestSucceeded) {
-          Write-Error "TCP connection to RDP port 3389 failed"
-          exit 1
-        }
-
-        Write-Host "TCP connectivity successful!"
+        $newIssue = gh issue create --title "RDP_SESSION_ACTIVE" --body "$body" --label "rdp-active"
+        Write-Host "Created Session Issue: $newIssue"
 
     - name: Maintain Connection
       run: |
-        Write-Host "========== RDP ACCESS =========="
-        Write-Host "Address : $env:TAILSCALE_IP"
-        Write-Host "Username: RDP"
-        Write-Host "Password: $env:RDP_CREDS"
-        Write-Host "================================"
-
+        Write-Host "================== RDP READY =================="
+        Write-Host "Host     : $env:TUNNEL_HOST"
+        Write-Host "Port     : $env:TUNNEL_PORT"
+        Write-Host "Username : RDP"
+        Write-Host "Password : $env:RDP_PASS"
+        Write-Host "==============================================="
         while ($true) {
-          Write-Host "[$(Get-Date)] RDP Active – Ctrl+C to stop"
+          Write-Host "[$(Get-Date)] Direct RDP Active"
           Start-Sleep 300
         }

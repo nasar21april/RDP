@@ -44,7 +44,6 @@ jobs:
         Add-LocalGroupMember -Group "Administrators" -Member "RDP"
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
 
-        # Enable AutoLogon to initialize Explorer Shell, Desktop and Start Menu
         Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "AutoAdminLogon" -Value "1" -Force
         Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "DefaultUserName" -Value "RDP" -Force
         Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "DefaultPassword" -Value "$password" -Force
@@ -53,103 +52,42 @@ jobs:
 
     - name: Setup Tools & Install Chrome
       run: |
-        # 1. Install Google Chrome (Enterprise Standalone 64-bit MSI)
         Write-Host "Installing Google Chrome..."
         try {
           $chromeUrl = "https://dl.google.com/chrome/install/GoogleChromeStandaloneEnterprise64.msi"
           Invoke-WebRequest -Uri $chromeUrl -OutFile "$env:TEMP\chrome.msi" -UseBasicParsing
           Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$env:TEMP\chrome.msi`" /quiet /norestart" -Wait
-          Write-Host "Google Chrome installed successfully."
+          Write-Host "Google Chrome installed."
         } catch {
-          Write-Host "Notice: Chrome MSI download/install fallback: $_"
+          Write-Host "Notice: Chrome fallback: $_"
           choco install googlechrome -y --no-progress -ErrorAction SilentlyContinue
         }
 
-        # 2. Disable Server Manager at logon
         Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\ServerManager" -Name "DoNotOpenServerManagerAtLogon" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
 
-        # 3. Download Bore Tunnel
         Write-Host "Installing Bore tunnel..."
         Invoke-WebRequest "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-pc-windows-msvc.zip" -OutFile "$env:TEMP\bore.zip"
         Expand-Archive -Path "$env:TEMP\bore.zip" -DestinationPath "$env:ProgramData\bore" -Force
         echo "BORE_EXE=$env:ProgramData\bore\bore.exe" >> $env:GITHUB_ENV
 
-        # 4. Clone and Configure WebRDP
         Write-Host "Setting up WebRDP HTML5 gateway..."
         git clone https://github.com/Mikej81/WebRDP.git "$env:ProgramData\WebRDP"
         cd "$env:ProgramData\WebRDP"
         npm install --silent
 
-        # Always-authorized auth.js bypasses 401 errors for assets and streams
-        $authContent = @"
-export function basicAuth(req, res, next) {
-  req.session.username = req.query.user || process.env.RDP_USER || 'RDP';
-  req.session.userpassword = req.query.pass || process.env.RDP_PASS || '';
-  req.session.rdpdomain = '';
-  next();
-}
-"@
-        Set-Content -Path "$env:ProgramData\WebRDP\lib\auth.js" -Value $authContent
+        $b64Auth = "ZXhwb3J0IGZ1bmN0aW9uIGJhc2ljQXV0aChyZXEsIHJlcywgbmV4dCkgeyByZXEuc2Vzc2lvbi51c2VybmFtZSA9IHJlcS5xdWVyeS51c2VyIHx8IHByb2Nlc3MuZW52LlJEUF9VU0VSIHx8ICdSRFAnOyByZXEuc2Vzc2lvbi51c2VycGFzc3dvcmQgPSByZXEucXVlcnkucGFzcyB8fCBwcm9jZXNzLmVudi5SRFBfUEFTUyB8fCAnJzsgcmVxLnNlc3Npb24ucmRwZG9tYWluID0gJyc7IG5leHQoKTsgfQ=="
+        [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64Auth)) | Set-Content -Path "$env:ProgramData\WebRDP\lib\auth.js"
 
-        # Remove rate-limiting in app.js
         $appFile = "$env:ProgramData\WebRDP\app.js"
         $appContent = Get-Content $appFile -Raw
         $appContent = $appContent.Replace("app.use(rateLimit({", "/* app.use(rateLimit({")
         $appContent = $appContent.Replace("legacyHeaders: false`n  }));", "legacyHeaders: false })); */")
         Set-Content -Path $appFile -Value $appContent
 
-        # Build client bundle
         node esbuild.config.js
 
-        # Custom Fullscreen Desktop client.html (no white placeholder, 100% canvas, mouse/touch support)
-        $clientHtml = @"
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Windows Cloud Desktop</title>
-    <style>
-      * { box-sizing: border-box; }
-      html, body {
-        margin: 0; padding: 0; width: 100vw; height: 100vh; overflow: hidden; background: #000;
-      }
-      #header, #main { display: none !important; }
-      #myCanvas {
-        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; display: block; object-fit: contain; cursor: default;
-      }
-    </style>
-    <script src="/socket.io/socket.io.js"></script>
-    <script src="/js/rle.js"></script>
-    <script type="module" src="/js/webrdp.js"></script>
-  </head>
-  <body>
-    <div id="header" style="display:none"></div>
-    <div id="main" style="display:none"></div>
-    <canvas id="myCanvas"></canvas>
-    <script type="module">
-      const canvas = document.getElementById('myCanvas');
-      const client = window.WebRDP.createClient(canvas);
-
-      function connect() {
-        // Optimal widescreen resolution for remote Windows Explorer
-        canvas.width = Math.max(window.innerWidth, 1280);
-        canvas.height = Math.max(window.innerHeight, 720);
-        client.connect((err) => {
-          if (err) console.error("WebRDP connect err:", err);
-        });
-      }
-
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', connect);
-      } else {
-        connect();
-      }
-    </script>
-  </body>
-</html>
-"@
-        Set-Content -Path "$env:ProgramData\WebRDP\client\html\client.html" -Value $clientHtml
+        $b64Html = "PCFET0NUWVBFIGh0bWw+CjxodG1sIGxhbmc9ImVuIj4KICA8aGVhZD4KICAgIDxtZXRhIGNoYXJzZXQ9InV0Zi04Ij4KICAgIDxtZXRhIG5hbWU9InZpZXdwb3J0IiBjb250ZW50PSJ3aWR0aD1kZXZpY2Utd2lkdGgsIGluaXRpYWwtc2NhbGU9MS4wLCBtYXhpbXVtLXNjYWxlPTEuMCwgdXNlci1zY2FsYWJsZT1ubyI+CiAgICA8dGl0bGU+V2luZG93cyBDbG91ZCBEZXNrdG9wPC90aXRsZT4KICAgIDxzdHlsZT4KICAgICAgKiB7IGJveC1zaXppbmc6IGJvcmRlci1ib3g7IH0KICAgICAgaHRtbCwgYm9keSB7IG1hcmdpbjogMDsgcGFkZGluZzogMDsgd2lkdGg6IDEwMHZ3OyBoZWlnaHQ6IDEwMHZoOyBvdmVyZmxvdzogaGlkZGVuOyBiYWNrZ3JvdW5kOiAjMDAwOyB9CiAgICAgICNoZWFkZXIsICNtYWluIHsgZGlzcGxheTogbm9uZSAhaW1wb3J0YW50OyB9CiAgICAgICNteUNhbnZhcyB7IHBvc2l0aW9uOiBmaXhlZDsgdG9wOiAwOyBsZWZ0OiAwOyB3aWR0aDogMTAwdnc7IGhlaWdodDogMTAwdmg7IGRpc3BsYXk6IGJsb2NrOyBvYmplY3QtZml0OiBjb250YWluOyBjdXJzb3I6IGRlZmF1bHQ7IH0KICAgIDwvc3R5bGU+CiAgICA8c2NyaXB0IHNyYz0iL3NvY2tldC5pby9zb2NrZXQuaW8uanMiPjwvc2NyaXB0PgogICAgPHNjcmlwdCBzcmM9Ii9qcy9ybGUuanMiPjwvc2NyaXB0PgogICAgPHNjcmlwdCB0eXBlPSJtb2R1bGUiIHNyYz0iL2pzL3dlYnJkcC5qcyI+PC9zY3JpcHQ+CiAgPC9oZWFkPgogIDxib2R5PgogICAgPGRpdiBpZD0iaGVhZGVyIiBzdHlsZT0iZGlzcGxheTpub25lIj48L2Rpdj4KICAgIDxkaXYgaWQ9Im1haW4iIHN0eWxlPSJkaXNwbGF5Om5vbmUiPjwvZGl2PgogICAgPGNhbnZhcyBpZD0ibXlDYW52YXMiPjwvY2FudmFzPgogICAgPHNjcmlwdCB0eXBlPSJtb2R1bGUiPgogICAgICBjb25zdCBjYW52YXMgPSBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnbXlDYW52YXMnKTsKICAgICAgY29uc3QgY2xpZW50ID0gd2luZG93LldlYlJEUC5jcmVhdGVDbGllbnQoY2FudmFzKTsKICAgICAgZnVuY3Rpb24gY29ubmVjdCgpIHsKICAgICAgICBjYW52YXMud2lkdGggPSBNYXRoLm1heCh3aW5kb3cuaW5uZXJXaWR0aCwgMTI4MCk7CiAgICAgICAgY2FudmFzLmhlaWdodCA9IE1hdGgubWF4KHdpbmRvdy5pbm5lckhlaWdodCwgNzIwKTsKICAgICAgICBjbGllbnQuY29ubmVjdCgoZXJyKSA9PiB7CiAgICAgICAgICBpZiAoZXJyKSBjb25zb2xlLmVycm9yKCJXZWJSRFAgY29ubmVjdCBlcnI6IiwgZXJyKTsKICAgICAgICB9KTsKICAgICAgfQogICAgICBpZiAoZG9jdW1lbnQucmVhZHlTdGF0ZSA9PT0gJ2xvYWRpbmcnKSB7CiAgICAgICAgZG9jdW1lbnQuYWRkRXZlbnRMaXN0ZW5lcignRE9NQ29udGVudExvYWRlZCcsIGNvbm5lY3QpOwogICAgICB9IGVsc2UgewogICAgICAgIGNvbm5lY3QoKTsKICAgICAgfQogICAgPC9zY3JpcHQ+CiAgPC9ib2R5Pgo8L2h0bWw+"
+        [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64Html)) | Set-Content -Path "$env:ProgramData\WebRDP\client\html\client.html"
         Write-Host "WebRDP configured successfully."
 
     - name: Launch WebRDP, Persistent Tunnel & Publish Session

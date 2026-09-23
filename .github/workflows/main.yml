@@ -42,45 +42,57 @@ jobs:
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
         echo "RDP_PASS=$password" >> $env:GITHUB_ENV
 
-    - name: Start Direct Cloud Tunnel
+    - name: Setup Direct Cloud Tunnel Tool
       run: |
         Invoke-WebRequest "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-pc-windows-msvc.zip" -OutFile "$env:TEMP\bore.zip"
-        Expand-Archive -Path "$env:TEMP\bore.zip" -DestinationPath "$env:TEMP\bore" -Force
-        $borePath = "$env:TEMP\bore\bore.exe"
+        Expand-Archive -Path "$env:TEMP\bore.zip" -DestinationPath "$env:ProgramData\bore" -Force
+        echo "BORE_EXE=$env:ProgramData\bore\bore.exe" >> $env:GITHUB_ENV
 
-        $proc = Start-Process -FilePath $borePath -ArgumentList "local 3389 --to bore.pub" `
-          -RedirectStandardOutput "$env:TEMP\bore.log" `
-          -RedirectStandardError "$env:TEMP\bore_err.log" `
-          -PassThru -NoNewWindow
-
-        $matched = $false
-        for ($i = 0; $i -lt 15; $i++) {
-          Start-Sleep 1
-          $log = ""
-          if (Test-Path "$env:TEMP\bore.log") { $log += Get-Content "$env:TEMP\bore.log" -Raw }
-          if (Test-Path "$env:TEMP\bore_err.log") { $log += Get-Content "$env:TEMP\bore_err.log" -Raw }
-          if ($log -match "listening at ([a-zA-Z0-9\.\-]+):(\d+)") {
-            $hostName = $matches[1]
-            $port = $matches[2]
-            echo "TUNNEL_HOST=$hostName" >> $env:GITHUB_ENV
-            echo "TUNNEL_PORT=$port" >> $env:GITHUB_ENV
-            Write-Host "Direct Public Address: ${hostName}:${port}"
-            $matched = $true
-            break
-          }
-        }
-        if (-not $matched) {
-          Write-Host "Tunnel Log: $log"
-          Write-Error "Could not start direct tunnel"
-          exit 1
-        }
-
-    - name: Publish Session Details to App
+    - name: Launch Persistent Tunnel & Publish Session
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         GH_REPO: ${{ github.repository }}
       run: |
-        $body = "Host: $env:TUNNEL_HOST`nPort: $env:TUNNEL_PORT`nUsername: RDP`nPassword: $env:RDP_PASS`nStartedAt: $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')"
+        $borePath = "$env:ProgramData\bore\bore.exe"
+        $outFile = "$env:TEMP\bore_out.log"
+        $errFile = "$env:TEMP\bore_err.log"
+
+        # Start bore.exe in background within this persistent step
+        $proc = Start-Process -FilePath $borePath -ArgumentList "local 3389 --to bore.pub" `
+          -RedirectStandardOutput $outFile `
+          -RedirectStandardError $errFile `
+          -PassThru
+
+        # Wait for public listening port to appear
+        $hostName = ""
+        $port = ""
+        for ($i = 0; $i -lt 20; $i++) {
+          Start-Sleep 1
+          $log = ""
+          if (Test-Path $outFile) { $log += Get-Content $outFile -Raw }
+          if (Test-Path $errFile) { $log += Get-Content $errFile -Raw }
+          if ($log -match "listening at ([a-zA-Z0-9\.\-]+):(\d+)") {
+            $hostName = $matches[1]
+            $port = $matches[2]
+            break
+          }
+        }
+
+        if (-not $hostName -or -not $port) {
+          Write-Host "Bore Log: $log"
+          Write-Error "Failed to obtain public tunnel endpoint"
+          exit 1
+        }
+
+        Write-Host "================== RDP READY =================="
+        Write-Host "Host     : $hostName"
+        Write-Host "Port     : $port"
+        Write-Host "Username : RDP"
+        Write-Host "Password : $env:RDP_PASS"
+        Write-Host "==============================================="
+
+        # Publish credentials to GitHub Issues for the Android app
+        $body = "Host: $hostName`nPort: $port`nUsername: RDP`nPassword: $env:RDP_PASS`nStartedAt: $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')"
         $headers = @{
           "Authorization" = "Bearer $env:GH_TOKEN"
           "Accept"        = "application/vnd.github.v3+json"
@@ -93,9 +105,7 @@ jobs:
             $closeJson = @{ state = "closed" } | ConvertTo-Json
             Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/issues/$($old.number)" -Headers $headers -Method Patch -Body $closeJson | Out-Null
           }
-        } catch {
-          Write-Host "Notice: No previous active issue to close"
-        }
+        } catch {}
 
         try {
           $newJson = @{
@@ -104,20 +114,22 @@ jobs:
             labels = @("rdp-active")
           } | ConvertTo-Json
           $created = Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/issues" -Headers $headers -Method Post -Body $newJson
-          Write-Host "Session Issue Created: #$($created.number)"
+          Write-Host "Session details successfully published: Issue #$($created.number)"
         } catch {
-          Write-Host "Failed to create session issue via API: $_"
+          Write-Host "Notice: Session issue creation: $_"
         }
 
-    - name: Maintain Connection
-      run: |
-        Write-Host "================== RDP READY =================="
-        Write-Host "Host     : $env:TUNNEL_HOST"
-        Write-Host "Port     : $env:TUNNEL_PORT"
-        Write-Host "Username : RDP"
-        Write-Host "Password : $env:RDP_PASS"
-        Write-Host "==============================================="
-        while ($true) {
-          Write-Host "[$(Get-Date)] Direct RDP Active"
-          Start-Sleep 300
+        # Keep bore process running continuously for up to 5 hours (18000s)
+        # If bore exits or reconnects, monitor it
+        $startTime = Get-Date
+        while ((Get-Date) -lt $startTime.AddHours(5)) {
+          if ($proc.HasExited) {
+            Write-Host "Tunnel process exited with code $($proc.ExitCode). Restarting..."
+            $proc = Start-Process -FilePath $borePath -ArgumentList "local 3389 --to bore.pub" `
+              -RedirectStandardOutput $outFile `
+              -RedirectStandardError $errFile `
+              -PassThru
+          }
+          Write-Host "[$(Get-Date)] Direct RDP Active on ${hostName}:${port}"
+          Start-Sleep 60
         }

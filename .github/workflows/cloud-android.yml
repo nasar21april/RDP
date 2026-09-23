@@ -1,0 +1,106 @@
+name: Cloud Android
+
+on:
+  workflow_dispatch:
+
+jobs:
+  cloud-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3600
+    steps:
+      - name: Enable Hardware Virtualization (KVM)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 666 /dev/kvm || true
+          ls -la /dev/kvm
+
+      - name: Install and Connect Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          TS_KEY="${{ secrets.TAILSCALE_AUTH_KEY }}"
+          if [ -z "$TS_KEY" ]; then
+            TS_KEY="tskey-auth-kt3BpdbNy211CNTRL-Y7t9xXevT35S1siKBBrr35jpf3yWe7nT"
+          fi
+          sudo tailscale up --authkey="$TS_KEY" --hostname=github-android --unattended --accept-routes
+
+      - name: Wait for Tailscale IP
+        run: |
+          for i in $(seq 1 30); do
+            IP=$(tailscale ip -4 2>/dev/null || true)
+            if [ -n "$IP" ]; then
+              echo "TAILSCALE_IP=$IP" >> $GITHUB_ENV
+              echo "Tailscale IP: $IP"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Launch Android 11 with Google Play & Web VNC
+        run: |
+          docker run -d \
+            --name android-container \
+            --privileged \
+            --device /dev/kvm \
+            -p 6080:6080 \
+            -p 5555:5555 \
+            -p 5900:5900 \
+            -e DEVICE="Samsung Galaxy S10" \
+            -e APPIUM=false \
+            -e WEB_VNC=true \
+            budtmo/docker-android:emulator_11.0
+
+      - name: Wait for Android & Web noVNC Service
+        run: |
+          echo "Waiting for Web VNC on port 6080..."
+          for i in $(seq 1 60); do
+            if curl -s -f http://localhost:6080 >/dev/null 2>&1; then
+              echo "Web VNC is live and ready!"
+              break
+            fi
+            echo "Still initializing... ($i/60)"
+            sleep 5
+          done
+
+      - name: Publish Android Session to GitHub Issues
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue list --state open --label "android-active" --json number -q '.[].number' | while read num; do
+            gh issue close "$num" --comment "Superseded by new Cloud Android session" || true
+          done
+
+          ISSUE_BODY=$(cat <<EOF
+          Host: $TAILSCALE_IP
+          WebUrl: http://$TAILSCALE_IP:6080
+          WebPort: 6080
+          VncPort: 5900
+          AdbPort: 5555
+          Device: Samsung Galaxy S10 (Android 11 + Google Play)
+          StartedAt: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          EOF
+          )
+
+          gh issue create \
+            --title "ANDROID_SESSION_ACTIVE" \
+            --label "android-active" \
+            --body "$ISSUE_BODY"
+
+      - name: Maintain Connection (5 Hours Keepalive)
+        run: |
+          echo "=========================================="
+          echo "Cloud Android is fully ACTIVE!"
+          echo "Web Browser URL: http://$TAILSCALE_IP:6080"
+          echo "VNC Client: $TAILSCALE_IP:5900"
+          echo "ADB Connect: $TAILSCALE_IP:5555"
+          echo "=========================================="
+          
+          TOTAL_SECONDS=18000 # 5 hours
+          ELAPSED=0
+          while [ $ELAPSED -lt $TOTAL_SECONDS ]; do
+            sleep 60
+            ELAPSED=$((ELAPSED + 60))
+            MIN_LEFT=$(((TOTAL_SECONDS - ELAPSED) / 60))
+            echo "[$(date -u +'%H:%M:%S')] Cloud Android active. Minutes remaining: $MIN_LEFT"
+          done

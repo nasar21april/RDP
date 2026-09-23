@@ -42,78 +42,23 @@ jobs:
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
         echo "RDP_PASS=$password" >> $env:GITHUB_ENV
 
-    - name: Setup Tools (Bore & WebRDP Gateway)
+    - name: Setup Tools
       run: |
-        # Download Bore Tunnel
         Invoke-WebRequest "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-pc-windows-msvc.zip" -OutFile "$env:TEMP\bore.zip"
         Expand-Archive -Path "$env:TEMP\bore.zip" -DestinationPath "$env:ProgramData\bore" -Force
         echo "BORE_EXE=$env:ProgramData\bore\bore.exe" >> $env:GITHUB_ENV
 
-        # Clone and build WebRDP
         git clone https://github.com/Mikej81/WebRDP.git "$env:ProgramData\WebRDP"
-        Set-Location "$env:ProgramData\WebRDP"
+        cd "$env:ProgramData\WebRDP"
         npm install --silent
         node esbuild.config.js
 
-        # Patch WebRDP auth.js to allow automatic URL parameter authentication (?user=...&pass=...)
         $authFile = "$env:ProgramData\WebRDP\lib\auth.js"
-        $authContent = Get-Content $authFile -Raw
-        $patch = 'export function basicAuth(req, res, next) { if (req.query.user) { req.session.username = req.query.user; req.session.userpassword = req.query.pass || ""; req.session.rdpdomain = ""; return next(); }'
-        $authContent = $authContent.Replace('export function basicAuth(req, res, next) {', $patch)
-        Set-Content $authFile $authContent
-
-        # Patch client.html to add touch handlers and fullscreen canvas styling
-        $clientFile = "$env:ProgramData\WebRDP\client\html\client.html"
-        $clientHtml = Get-Content $clientFile -Raw
-        $touchScript = @'
-    <style>
-      #header { display: none !important; }
-      body, html { margin: 0; padding: 0; overflow: hidden; width: 100vw; height: 100vh; background: #000; }
-      #myCanvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; object-fit: contain; }
-    </style>
-    <script>
-      window.addEventListener('DOMContentLoaded', () => {
-        const c = document.getElementById('myCanvas');
-        if (!c) return;
-        c.addEventListener('touchstart', (e) => {
-          if (!window._webrdpClient || !window._webrdpClient.socket) return;
-          const t = e.touches[0];
-          const rect = c.getBoundingClientRect();
-          const scaleX = c.width / rect.width;
-          const scaleY = c.height / rect.height;
-          const x = Math.round((t.clientX - rect.left) * scaleX);
-          const y = Math.round((t.clientY - rect.top) * scaleY);
-          window._webrdpClient.socket.emit('mouse', x, y, 1, true);
-          e.preventDefault();
-        }, { passive: false });
-        c.addEventListener('touchmove', (e) => {
-          if (!window._webrdpClient || !window._webrdpClient.socket) return;
-          const t = e.touches[0];
-          const rect = c.getBoundingClientRect();
-          const scaleX = c.width / rect.width;
-          const scaleY = c.height / rect.height;
-          const x = Math.round((t.clientX - rect.left) * scaleX);
-          const y = Math.round((t.clientY - rect.top) * scaleY);
-          window._webrdpClient.socket.emit('mouse', x, y, 0, false);
-          e.preventDefault();
-        }, { passive: false });
-        c.addEventListener('touchend', (e) => {
-          if (!window._webrdpClient || !window._webrdpClient.socket) return;
-          const t = e.changedTouches[0];
-          const rect = c.getBoundingClientRect();
-          const scaleX = c.width / rect.width;
-          const scaleY = c.height / rect.height;
-          const x = Math.round((t.clientX - rect.left) * scaleX);
-          const y = Math.round((t.clientY - rect.top) * scaleY);
-          window._webrdpClient.socket.emit('mouse', x, y, 1, false);
-          e.preventDefault();
-        }, { passive: false });
-      });
-    </script>
-'@
-        $clientHtml = $clientHtml.Replace('</head>', "$touchScript`n</head>")
-        $clientHtml = $clientHtml.Replace('const client = window.WebRDP.createClient', 'const client = window._webrdpClient = window.WebRDP.createClient')
-        Set-Content $clientFile $clientHtml
+        $content = Get-Content $authFile -Raw
+        $target = "export function basicAuth(req, res, next) {"
+        $replacement = "export function basicAuth(req, res, next) { if (req.query.user) { req.session.username = req.query.user; req.session.userpassword = req.query.pass || ''; req.session.rdpdomain = ''; return next(); }"
+        $content = $content.Replace($target, $replacement)
+        Set-Content $authFile $content
 
     - name: Launch WebRDP, Persistent Tunnel & Publish Session
       env:
@@ -123,7 +68,6 @@ jobs:
         $borePath = "$env:ProgramData\bore\bore.exe"
         $webrdpDir = "$env:ProgramData\WebRDP"
 
-        # Start WebRDP service
         $env:LISTEN_IP = "0.0.0.0"
         $env:LISTEN_PORT = "4200"
         $procNode = Start-Process -FilePath "node" -ArgumentList "app.js" `
@@ -132,7 +76,6 @@ jobs:
           -RedirectStandardError "$env:TEMP\webrdp_err.log" `
           -PassThru
 
-        # Start Bore tunnel for WebRDP (Port 4200)
         $outWeb = "$env:TEMP\bore_web_out.log"
         $errWeb = "$env:TEMP\bore_web_err.log"
         $procWeb = Start-Process -FilePath $borePath -ArgumentList "local 4200 --to bore.pub" `
@@ -140,7 +83,6 @@ jobs:
           -RedirectStandardError $errWeb `
           -PassThru
 
-        # Start Bore tunnel for standard RDP (Port 3389)
         $outRdp = "$env:TEMP\bore_rdp_out.log"
         $errRdp = "$env:TEMP\bore_rdp_err.log"
         $procRdp = Start-Process -FilePath $borePath -ArgumentList "local 3389 --to bore.pub" `
@@ -148,7 +90,6 @@ jobs:
           -RedirectStandardError $errRdp `
           -PassThru
 
-        # Wait for both public endpoints
         $webHost = ""
         $webPort = ""
         $rdpHost = ""
@@ -178,9 +119,7 @@ jobs:
         }
 
         if (-not $webPort -or -not $rdpPort) {
-          Write-Host "Web Bore Log: $(Get-Content $outWeb -Raw)"
-          Write-Host "RDP Bore Log: $(Get-Content $outRdp -Raw)"
-          Write-Error "Failed to obtain public tunnel endpoints"
+          Write-Error "Failed to obtain tunnel endpoints"
           exit 1
         }
 
@@ -194,7 +133,6 @@ jobs:
         Write-Host "Password : $env:RDP_PASS"
         Write-Host "==============================================="
 
-        # Publish credentials to GitHub Issues
         $body = "Host: $rdpHost`nPort: $rdpPort`nUsername: RDP`nPassword: $env:RDP_PASS`nWebUrl: $webUrl`nStartedAt: $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')"
         $headers = @{
           "Authorization" = "Bearer $env:GH_TOKEN"
@@ -222,11 +160,9 @@ jobs:
           Write-Host "Notice: Session issue creation: $_"
         }
 
-        # Keep all processes running for up to 5 hours (18000s)
         $startTime = Get-Date
         while ((Get-Date) -lt $startTime.AddHours(5)) {
           if ($procNode.HasExited) {
-            Write-Host "WebRDP exited with code $($procNode.ExitCode). Restarting..."
             $procNode = Start-Process -FilePath "node" -ArgumentList "app.js" `
               -WorkingDirectory $webrdpDir `
               -RedirectStandardOutput "$env:TEMP\webrdp_out.log" `
@@ -234,14 +170,12 @@ jobs:
               -PassThru
           }
           if ($procWeb.HasExited) {
-            Write-Host "Bore Web tunnel exited. Restarting..."
             $procWeb = Start-Process -FilePath $borePath -ArgumentList "local 4200 --to bore.pub" `
               -RedirectStandardOutput $outWeb `
               -RedirectStandardError $errWeb `
               -PassThru
           }
           if ($procRdp.HasExited) {
-            Write-Host "Bore RDP tunnel exited. Restarting..."
             $procRdp = Start-Process -FilePath $borePath -ArgumentList "local 3389 --to bore.pub" `
               -RedirectStandardOutput $outRdp `
               -RedirectStandardError $errRdp `

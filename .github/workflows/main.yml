@@ -40,25 +40,114 @@ jobs:
         New-LocalUser -Name "RDP" -Password $secure -AccountNeverExpires
         Add-LocalGroupMember -Group "Administrators" -Member "RDP"
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+
+        # Enable AutoLogon to initialize Explorer Shell, Desktop and Start Menu
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "AutoAdminLogon" -Value "1" -Force
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "DefaultUserName" -Value "RDP" -Force
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "DefaultPassword" -Value "$password" -Force
+
         echo "RDP_PASS=$password" >> $env:GITHUB_ENV
 
-    - name: Setup Tools
+    - name: Setup Tools & Install Chrome
       run: |
+        # 1. Install Google Chrome (Enterprise Standalone 64-bit MSI)
+        Write-Host "Installing Google Chrome..."
+        try {
+          $chromeUrl = "https://dl.google.com/chrome/install/GoogleChromeStandaloneEnterprise64.msi"
+          Invoke-WebRequest -Uri $chromeUrl -OutFile "$env:TEMP\chrome.msi" -UseBasicParsing
+          Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$env:TEMP\chrome.msi`" /quiet /norestart" -Wait
+          Write-Host "Google Chrome installed successfully."
+        } catch {
+          Write-Host "Notice: Chrome MSI download/install fallback: $_"
+          choco install googlechrome -y --no-progress -ErrorAction SilentlyContinue
+        }
+
+        # 2. Disable Server Manager at logon
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\ServerManager" -Name "DoNotOpenServerManagerAtLogon" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+
+        # 3. Download Bore Tunnel
+        Write-Host "Installing Bore tunnel..."
         Invoke-WebRequest "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-pc-windows-msvc.zip" -OutFile "$env:TEMP\bore.zip"
         Expand-Archive -Path "$env:TEMP\bore.zip" -DestinationPath "$env:ProgramData\bore" -Force
         echo "BORE_EXE=$env:ProgramData\bore\bore.exe" >> $env:GITHUB_ENV
 
+        # 4. Clone and Configure WebRDP
+        Write-Host "Setting up WebRDP HTML5 gateway..."
         git clone https://github.com/Mikej81/WebRDP.git "$env:ProgramData\WebRDP"
         cd "$env:ProgramData\WebRDP"
         npm install --silent
+
+        # Always-authorized auth.js bypasses 401 errors for assets and streams
+        $authContent = @"
+export function basicAuth(req, res, next) {
+  req.session.username = req.query.user || process.env.RDP_USER || 'RDP';
+  req.session.userpassword = req.query.pass || process.env.RDP_PASS || '';
+  req.session.rdpdomain = '';
+  next();
+}
+"@
+        Set-Content -Path "$env:ProgramData\WebRDP\lib\auth.js" -Value $authContent
+
+        # Remove rate-limiting in app.js
+        $appFile = "$env:ProgramData\WebRDP\app.js"
+        $appContent = Get-Content $appFile -Raw
+        $appContent = $appContent.Replace("app.use(rateLimit({", "/* app.use(rateLimit({")
+        $appContent = $appContent.Replace("legacyHeaders: false`n  }));", "legacyHeaders: false })); */")
+        Set-Content -Path $appFile -Value $appContent
+
+        # Build client bundle
         node esbuild.config.js
 
-        $authFile = "$env:ProgramData\WebRDP\lib\auth.js"
-        $content = Get-Content $authFile -Raw
-        $target = "export function basicAuth(req, res, next) {"
-        $replacement = "export function basicAuth(req, res, next) { if (req.query.user) { req.session.username = req.query.user; req.session.userpassword = req.query.pass || ''; req.session.rdpdomain = ''; return next(); }"
-        $content = $content.Replace($target, $replacement)
-        Set-Content $authFile $content
+        # Custom Fullscreen Desktop client.html (no white placeholder, 100% canvas, mouse/touch support)
+        $clientHtml = @"
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Windows Cloud Desktop</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0; padding: 0; width: 100vw; height: 100vh; overflow: hidden; background: #000;
+      }
+      #header, #main { display: none !important; }
+      #myCanvas {
+        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; display: block; object-fit: contain; cursor: default;
+      }
+    </style>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/js/rle.js"></script>
+    <script type="module" src="/js/webrdp.js"></script>
+  </head>
+  <body>
+    <div id="header" style="display:none"></div>
+    <div id="main" style="display:none"></div>
+    <canvas id="myCanvas"></canvas>
+    <script type="module">
+      const canvas = document.getElementById('myCanvas');
+      const client = window.WebRDP.createClient(canvas);
+
+      function connect() {
+        // Optimal widescreen resolution for remote Windows Explorer
+        canvas.width = Math.max(window.innerWidth, 1280);
+        canvas.height = Math.max(window.innerHeight, 720);
+        client.connect((err) => {
+          if (err) console.error("WebRDP connect err:", err);
+        });
+      }
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', connect);
+      } else {
+        connect();
+      }
+    </script>
+  </body>
+</html>
+"@
+        Set-Content -Path "$env:ProgramData\WebRDP\client\html\client.html" -Value $clientHtml
+        Write-Host "WebRDP configured successfully."
 
     - name: Launch WebRDP, Persistent Tunnel & Publish Session
       env:
@@ -68,6 +157,7 @@ jobs:
         $borePath = "$env:ProgramData\bore\bore.exe"
         $webrdpDir = "$env:ProgramData\WebRDP"
 
+        $env:RDP_USER = "RDP"
         $env:LISTEN_IP = "0.0.0.0"
         $env:LISTEN_PORT = "4200"
         $procNode = Start-Process -FilePath "node" -ArgumentList "app.js" `

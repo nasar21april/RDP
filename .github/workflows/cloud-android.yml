@@ -64,11 +64,12 @@ jobs:
           done
 
       - name: Publish Android Session to GitHub Issues
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh issue list --state open --label "android-active" --json number -q '.[].number' | while read num; do
-            gh issue close "$num" --comment "Superseded by new Cloud Android session" || true
+          gh issue list -R nasar21april/RDP --state open --label "android-active" --json number -q '.[].number' | while read num; do
+            gh issue close -R nasar21april/RDP "$num" --comment "Superseded by new Cloud Android session" || true
           done
 
           ISSUE_BODY=$(cat <<EOF
@@ -82,7 +83,7 @@ jobs:
           EOF
           )
 
-          gh issue create \
+          gh issue create -R nasar21april/RDP \
             --title "ANDROID_SESSION_ACTIVE" \
             --label "android-active" \
             --body "$ISSUE_BODY"

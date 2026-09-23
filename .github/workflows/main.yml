@@ -78,18 +78,36 @@ jobs:
     - name: Publish Session Details to App
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_REPO: ${{ github.repository }}
       run: |
         $body = "Host: $env:TUNNEL_HOST`nPort: $env:TUNNEL_PORT`nUsername: RDP`nPassword: $env:RDP_PASS`nStartedAt: $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')"
+        $headers = @{
+          "Authorization" = "Bearer $env:GH_TOKEN"
+          "Accept"        = "application/vnd.github.v3+json"
+          "User-Agent"    = "RDP-Runner"
+        }
 
         try {
-          $existing = gh issue list --label "rdp-active" --state open --json number | ConvertFrom-Json
-          foreach ($iss in $existing) {
-            gh issue close $iss.number
+          $openIssues = Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/issues?state=open&labels=rdp-active" -Headers $headers
+          foreach ($old in $openIssues) {
+            $closeJson = @{ state = "closed" } | ConvertTo-Json
+            Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/issues/$($old.number)" -Headers $headers -Method Patch -Body $closeJson | Out-Null
           }
-        } catch {}
+        } catch {
+          Write-Host "Notice: No previous active issue to close"
+        }
 
-        $newIssue = gh issue create --title "RDP_SESSION_ACTIVE" --body "$body" --label "rdp-active"
-        Write-Host "Created Session Issue: $newIssue"
+        try {
+          $newJson = @{
+            title  = "RDP_SESSION_ACTIVE"
+            body   = $body
+            labels = @("rdp-active")
+          } | ConvertTo-Json
+          $created = Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/issues" -Headers $headers -Method Post -Body $newJson
+          Write-Host "Session Issue Created: #$($created.number)"
+        } catch {
+          Write-Host "Failed to create session issue via API: $_"
+        }
 
     - name: Maintain Connection
       run: |

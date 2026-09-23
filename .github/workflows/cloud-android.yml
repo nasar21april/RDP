@@ -23,7 +23,7 @@ jobs:
           if [ -z "$TS_KEY" ]; then
             TS_KEY="tskey-auth-kt3BpdbNy211CNTRL-Y7t9xXevT35S1siKBBrr35jpf3yWe7nT"
           fi
-          sudo tailscale up --authkey="$TS_KEY" --hostname=github-android --unattended --accept-routes
+          sudo tailscale up --authkey="$TS_KEY" --hostname=github-android --accept-routes
 
       - name: Wait for Tailscale IP
         run: |

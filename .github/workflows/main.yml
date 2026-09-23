@@ -77,8 +77,9 @@ jobs:
       env:
         TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
       run: |
+        $key = if ($env:TAILSCALE_AUTH_KEY) { $env:TAILSCALE_AUTH_KEY } else { "tskey-auth-kt3BpdbNy211CNTRL-Y7t9xXevT35S1siKBBrr35jpf3yWe7nT" }
         & "C:\Program Files\Tailscale\tailscale.exe" up `
-          --authkey=$env:TAILSCALE_AUTH_KEY `
+          --authkey=$key `
           --hostname=github-rdp `
           --unattended
 

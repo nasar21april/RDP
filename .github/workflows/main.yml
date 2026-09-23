@@ -18,147 +18,130 @@ jobs:
     steps:
     - name: Configure Core RDP Settings
       run: |
-        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Force
-        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 0 -Force
-        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "SecurityLayer" -Value 0 -Force
-        netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
+        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
+          -Name "fDenyTSConnections" -Value 0 -Force
+
+        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+          -Name "UserAuthentication" -Value 0 -Force
+
+        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+          -Name "SecurityLayer" -Value 0 -Force
+
+        netsh advfirewall firewall delete rule name="RDP-Tailscale"
+        netsh advfirewall firewall add rule name="RDP-Tailscale" `
+          dir=in action=allow protocol=TCP localport=3389
+
         Restart-Service -Name TermService -Force
 
     - name: Create RDP User with Secure Password
       run: |
         Add-Type -AssemblyName System.Security
+
         $charSet = @{
           Upper   = [char[]](65..90)
           Lower   = [char[]](97..122)
           Number  = [char[]](48..57)
           Special = ([char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126))
         }
+
         $raw = @()
         $raw += $charSet.Upper   | Get-Random -Count 4
         $raw += $charSet.Lower   | Get-Random -Count 4
         $raw += $charSet.Number  | Get-Random -Count 4
         $raw += $charSet.Special | Get-Random -Count 4
+
         $password = ($raw | Get-Random -Count $raw.Count) -join ''
         $secure   = ConvertTo-SecureString $password -AsPlainText -Force
+
         New-LocalUser -Name "RDP" -Password $secure -AccountNeverExpires
         Add-LocalGroupMember -Group "Administrators" -Member "RDP"
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
 
+        # Autologon initializes Windows Explorer, Start Menu and Desktop
         Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "AutoAdminLogon" -Value "1" -Force
         Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "DefaultUserName" -Value "RDP" -Force
         Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "DefaultPassword" -Value "$password" -Force
 
-        echo "RDP_PASS=$password" >> $env:GITHUB_ENV
+        if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
+          Write-Error "User creation failed"
+          exit 1
+        }
 
-    - name: Setup Tools & Install Chrome
+        echo "RDP_PASS=$password" >> $env:GITHUB_ENV
+        echo "RDP_CREDS=RDP / $password" >> $env:GITHUB_ENV
+
+    - name: Pre-install Google Chrome & Tools
       run: |
         Write-Host "Installing Google Chrome..."
         try {
           $chromeUrl = "https://dl.google.com/chrome/install/GoogleChromeStandaloneEnterprise64.msi"
           Invoke-WebRequest -Uri $chromeUrl -OutFile "$env:TEMP\chrome.msi" -UseBasicParsing
-          Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$env:TEMP\chrome.msi`" /quiet /norestart" -Wait
-          Write-Host "Google Chrome installed."
+          Start-Process msiexec.exe -ArgumentList "/i `"$env:TEMP\chrome.msi`" /quiet /norestart" -Wait
+          Write-Host "Chrome installed."
         } catch {
-          Write-Host "Notice: Chrome fallback: $_"
+          Write-Host "Chrome install fallback: $_"
           choco install googlechrome -y --no-progress -ErrorAction SilentlyContinue
         }
 
         Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\ServerManager" -Name "DoNotOpenServerManagerAtLogon" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
 
-        Write-Host "Installing Bore tunnel..."
-        Invoke-WebRequest "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-pc-windows-msvc.zip" -OutFile "$env:TEMP\bore.zip"
-        Expand-Archive -Path "$env:TEMP\bore.zip" -DestinationPath "$env:ProgramData\bore" -Force
-        echo "BORE_EXE=$env:ProgramData\bore\bore.exe" >> $env:GITHUB_ENV
+    - name: Install Tailscale
+      run: |
+        $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+        $msi = "$env:TEMP\tailscale.msi"
 
-        Write-Host "Setting up WebRDP HTML5 gateway..."
-        git clone https://github.com/Mikej81/WebRDP.git "$env:ProgramData\WebRDP"
-        cd "$env:ProgramData\WebRDP"
-        npm install --silent
+        Invoke-WebRequest -Uri $url -OutFile $msi
+        Start-Process msiexec.exe `
+          -ArgumentList "/i `"$msi`" /quiet /norestart" `
+          -Wait
 
-        $b64Auth = "ZXhwb3J0IGZ1bmN0aW9uIGJhc2ljQXV0aChyZXEsIHJlcywgbmV4dCkgeyByZXEuc2Vzc2lvbi51c2VybmFtZSA9IHJlcS5xdWVyeS51c2VyIHx8IHByb2Nlc3MuZW52LlJEUF9VU0VSIHx8ICdSRFAnOyByZXEuc2Vzc2lvbi51c2VycGFzc3dvcmQgPSByZXEucXVlcnkucGFzcyB8fCBwcm9jZXNzLmVudi5SRFBfUEFTUyB8fCAnJzsgcmVxLnNlc3Npb24ucmRwZG9tYWluID0gJyc7IG5leHQoKTsgfQ=="
-        [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64Auth)) | Set-Content -Path "$env:ProgramData\WebRDP\lib\auth.js"
+        Remove-Item $msi -Force
 
-        node esbuild.config.js
+    - name: Establish Tailscale Connection
+      env:
+        TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+      run: |
+        & "C:\Program Files\Tailscale\tailscale.exe" up `
+          --authkey=$env:TAILSCALE_AUTH_KEY `
+          --hostname=github-rdp `
+          --unattended
 
-        $b64Html = "PCFET0NUWVBFIGh0bWw+CjxodG1sIGxhbmc9ImVuIj4KICA8aGVhZD4KICAgIDxtZXRhIGNoYXJzZXQ9InV0Zi04Ij4KICAgIDxtZXRhIG5hbWU9InZpZXdwb3J0IiBjb250ZW50PSJ3aWR0aD1kZXZpY2Utd2lkdGgsIGluaXRpYWwtc2NhbGU9MS4wLCBtYXhpbXVtLXNjYWxlPTEuMCwgdXNlci1zY2FsYWJsZT1ubyI+CiAgICA8dGl0bGU+V2luZG93cyBDbG91ZCBEZXNrdG9wPC90aXRsZT4KICAgIDxzdHlsZT4KICAgICAgKiB7IGJveC1zaXppbmc6IGJvcmRlci1ib3g7IH0KICAgICAgaHRtbCwgYm9keSB7IG1hcmdpbjogMDsgcGFkZGluZzogMDsgd2lkdGg6IDEwMHZ3OyBoZWlnaHQ6IDEwMHZoOyBvdmVyZmxvdzogaGlkZGVuOyBiYWNrZ3JvdW5kOiAjMDAwOyB9CiAgICAgICNoZWFkZXIsICNtYWluIHsgZGlzcGxheTogbm9uZSAhaW1wb3J0YW50OyB9CiAgICAgICNteUNhbnZhcyB7IHBvc2l0aW9uOiBmaXhlZDsgdG9wOiAwOyBsZWZ0OiAwOyB3aWR0aDogMTAwdnc7IGhlaWdodDogMTAwdmg7IGRpc3BsYXk6IGJsb2NrOyBvYmplY3QtZml0OiBjb250YWluOyBjdXJzb3I6IGRlZmF1bHQ7IH0KICAgIDwvc3R5bGU+CiAgICA8c2NyaXB0IHNyYz0iL3NvY2tldC5pby9zb2NrZXQuaW8uanMiPjwvc2NyaXB0PgogICAgPHNjcmlwdCBzcmM9Ii9qcy9ybGUuanMiPjwvc2NyaXB0PgogICAgPHNjcmlwdCB0eXBlPSJtb2R1bGUiIHNyYz0iL2pzL3dlYnJkcC5qcyI+PC9zY3JpcHQ+CiAgPC9oZWFkPgogIDxib2R5PgogICAgPGRpdiBpZD0iaGVhZGVyIiBzdHlsZT0iZGlzcGxheTpub25lIj48L2Rpdj4KICAgIDxkaXYgaWQ9Im1haW4iIHN0eWxlPSJkaXNwbGF5Om5vbmUiPjwvZGl2PgogICAgPGNhbnZhcyBpZD0ibXlDYW52YXMiPjwvY2FudmFzPgogICAgPHNjcmlwdCB0eXBlPSJtb2R1bGUiPgogICAgICBjb25zdCBjYW52YXMgPSBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnbXlDYW52YXMnKTsKICAgICAgY29uc3QgY2xpZW50ID0gd2luZG93LldlYlJEUC5jcmVhdGVDbGllbnQoY2FudmFzKTsKICAgICAgZnVuY3Rpb24gY29ubmVjdCgpIHsKICAgICAgICBjYW52YXMud2lkdGggPSBNYXRoLm1heCh3aW5kb3cuaW5uZXJXaWR0aCwgMTI4MCk7CiAgICAgICAgY2FudmFzLmhlaWdodCA9IE1hdGgubWF4KHdpbmRvdy5pbm5lckhlaWdodCwgNzIwKTsKICAgICAgICBjbGllbnQuY29ubmVjdCgoZXJyKSA9PiB7CiAgICAgICAgICBpZiAoZXJyKSBjb25zb2xlLmVycm9yKCJXZWJSRFAgY29ubmVjdCBlcnI6IiwgZXJyKTsKICAgICAgICB9KTsKICAgICAgfQogICAgICBpZiAoZG9jdW1lbnQucmVhZHlTdGF0ZSA9PT0gJ2xvYWRpbmcnKSB7CiAgICAgICAgZG9jdW1lbnQuYWRkRXZlbnRMaXN0ZW5lcignRE9NQ29udGVudExvYWRlZCcsIGNvbm5lY3QpOwogICAgICB9IGVsc2UgewogICAgICAgIGNvbm5lY3QoKTsKICAgICAgfQogICAgPC9zY3JpcHQ+CiAgPC9ib2R5Pgo8L2h0bWw+"
-        [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64Html)) | Set-Content -Path "$env:ProgramData\WebRDP\client\html\client.html"
-        Write-Host "WebRDP configured successfully."
+    - name: Wait for Tailscale IP
+      run: |
+        $tries = 0
+        do {
+          $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          Start-Sleep 5
+          $tries++
+        } until ($ip -or $tries -ge 10)
 
-    - name: Launch WebRDP, Persistent Tunnel & Publish Session
+        echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+
+    - name: Verify RDP Accessibility
+      run: |
+        Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+
+        $test = Test-NetConnection $env:TAILSCALE_IP -Port 3389
+        if (-not $test.TcpTestSucceeded) {
+          Write-Error "TCP connection to RDP port 3389 failed"
+          exit 1
+        }
+
+        Write-Host "TCP connectivity successful!"
+
+    - name: Maintain Connection & Publish Session
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         GH_REPO: ${{ github.repository }}
       run: |
-        $borePath = "$env:ProgramData\bore\bore.exe"
-        $webrdpDir = "$env:ProgramData\WebRDP"
+        Write-Host "========== RDP ACCESS =========="
+        Write-Host "Address : $env:TAILSCALE_IP"
+        Write-Host "Port    : 3389"
+        Write-Host "Username: RDP"
+        Write-Host "Password: $env:RDP_CREDS"
+        Write-Host "================================"
 
-        $env:RDP_USER = "RDP"
-        $env:LISTEN_IP = "0.0.0.0"
-        $env:LISTEN_PORT = "4200"
-        $procNode = Start-Process -FilePath "node" -ArgumentList "app.js" `
-          -WorkingDirectory $webrdpDir `
-          -RedirectStandardOutput "$env:TEMP\webrdp_out.log" `
-          -RedirectStandardError "$env:TEMP\webrdp_err.log" `
-          -PassThru
-
-        $outWeb = "$env:TEMP\bore_web_out.log"
-        $errWeb = "$env:TEMP\bore_web_err.log"
-        $procWeb = Start-Process -FilePath $borePath -ArgumentList "local 4200 --to bore.pub" `
-          -RedirectStandardOutput $outWeb `
-          -RedirectStandardError $errWeb `
-          -PassThru
-
-        $outRdp = "$env:TEMP\bore_rdp_out.log"
-        $errRdp = "$env:TEMP\bore_rdp_err.log"
-        $procRdp = Start-Process -FilePath $borePath -ArgumentList "local 3389 --to bore.pub" `
-          -RedirectStandardOutput $outRdp `
-          -RedirectStandardError $errRdp `
-          -PassThru
-
-        $webHost = ""
-        $webPort = ""
-        $rdpHost = ""
-        $rdpPort = ""
-
-        for ($i = 0; $i -lt 30; $i++) {
-          Start-Sleep 1
-          if (-not $webPort) {
-            $lWeb = ""
-            if (Test-Path $outWeb) { $lWeb += Get-Content $outWeb -Raw }
-            if (Test-Path $errWeb) { $lWeb += Get-Content $errWeb -Raw }
-            if ($lWeb -match "listening at ([a-zA-Z0-9\.\-]+):(\d+)") {
-              $webHost = $matches[1]
-              $webPort = $matches[2]
-            }
-          }
-          if (-not $rdpPort) {
-            $lRdp = ""
-            if (Test-Path $outRdp) { $lRdp += Get-Content $outRdp -Raw }
-            if (Test-Path $errRdp) { $lRdp += Get-Content $errRdp -Raw }
-            if ($lRdp -match "listening at ([a-zA-Z0-9\.\-]+):(\d+)") {
-              $rdpHost = $matches[1]
-              $rdpPort = $matches[2]
-            }
-          }
-          if ($webPort -and $rdpPort) { break }
-        }
-
-        if (-not $webPort -or -not $rdpPort) {
-          Write-Error "Failed to obtain tunnel endpoints"
-          exit 1
-        }
-
-        $webUrl = "http://${webHost}:${webPort}/rdp/host/127.0.0.1?user=RDP&pass=$($env:RDP_PASS)"
-
-        Write-Host "================== RDP READY =================="
-        Write-Host "Web URL  : $webUrl"
-        Write-Host "Host     : $rdpHost"
-        Write-Host "Port     : $rdpPort"
-        Write-Host "Username : RDP"
-        Write-Host "Password : $env:RDP_PASS"
-        Write-Host "==============================================="
-
-        $body = "Host: $rdpHost`nPort: $rdpPort`nUsername: RDP`nPassword: $env:RDP_PASS`nWebUrl: $webUrl`nStartedAt: $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')"
+        $body = "Host: $env:TAILSCALE_IP`nPort: 3389`nUsername: RDP`nPassword: $env:RDP_PASS`nStartedAt: $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')"
         $headers = @{
           "Authorization" = "Bearer $env:GH_TOKEN"
           "Accept"        = "application/vnd.github.v3+json"
@@ -180,32 +163,13 @@ jobs:
             labels = @("rdp-active")
           } | ConvertTo-Json
           $created = Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/issues" -Headers $headers -Method Post -Body $newJson
-          Write-Host "Session details successfully published: Issue #$($created.number)"
+          Write-Host "Session published to issue #$($created.number)"
         } catch {
           Write-Host "Notice: Session issue creation: $_"
         }
 
         $startTime = Get-Date
         while ((Get-Date) -lt $startTime.AddHours(5)) {
-          if ($procNode.HasExited) {
-            $procNode = Start-Process -FilePath "node" -ArgumentList "app.js" `
-              -WorkingDirectory $webrdpDir `
-              -RedirectStandardOutput "$env:TEMP\webrdp_out.log" `
-              -RedirectStandardError "$env:TEMP\webrdp_err.log" `
-              -PassThru
-          }
-          if ($procWeb.HasExited) {
-            $procWeb = Start-Process -FilePath $borePath -ArgumentList "local 4200 --to bore.pub" `
-              -RedirectStandardOutput $outWeb `
-              -RedirectStandardError $errWeb `
-              -PassThru
-          }
-          if ($procRdp.HasExited) {
-            $procRdp = Start-Process -FilePath $borePath -ArgumentList "local 3389 --to bore.pub" `
-              -RedirectStandardOutput $outRdp `
-              -RedirectStandardError $errRdp `
-              -PassThru
-          }
-          Write-Host "[$(Get-Date)] Direct RDP & Web GUI Active on ${rdpHost}:${rdpPort}"
+          Write-Host "[$(Get-Date)] Tailscale RDP Active on $env:TAILSCALE_IP : 3389"
           Start-Sleep 60
         }

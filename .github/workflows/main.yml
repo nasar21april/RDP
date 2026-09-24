@@ -106,6 +106,17 @@ jobs:
 
         Write-Host "TCP connectivity successful!"
 
+    - name: Start Web RDP Gateway
+      run: |
+        netsh advfirewall firewall add rule name="WebRDP-Port" dir=in action=allow protocol=TCP localport=4200
+        git clone https://github.com/Mikej81/WebRDP.git C:\WebRDP
+        cd C:\WebRDP
+        npm install --omit=dev
+        $env:LISTEN_PORT = "4200"
+        Start-Process -FilePath "node" -ArgumentList "app.js" -WorkingDirectory "C:\WebRDP" -WindowStyle Hidden
+        Start-Sleep -Seconds 5
+        Write-Host "Web RDP Gateway started successfully on port 4200"
+
     - name: Maintain Connection
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -115,6 +126,7 @@ jobs:
         Write-Host "Address : $env:TAILSCALE_IP"
         Write-Host "Username: RDP"
         Write-Host "Password: $env:RDP_CREDS"
+        Write-Host "Web URL : http://$($env:TAILSCALE_IP):4200/rdp/host/127.0.0.1"
         Write-Host "================================"
 
         $headers = @{
@@ -128,7 +140,7 @@ jobs:
             $closeJson = @{ state = "closed" } | ConvertTo-Json
             Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/issues/$($old.number)" -Headers $headers -Method Patch -Body $closeJson | Out-Null
           }
-          $body = "Host: $env:TAILSCALE_IP`nPort: 3389`nUsername: RDP`nPassword: $env:RDP_PASS`nStartedAt: $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')"
+          $body = "Host: $env:TAILSCALE_IP`nPort: 3389`nUsername: RDP`nPassword: $env:RDP_PASS`nWebUrl: http://$($env:TAILSCALE_IP):4200/rdp/host/127.0.0.1`nStartedAt: $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')"
           $newJson = @{
             title  = "RDP_SESSION_ACTIVE"
             body   = $body

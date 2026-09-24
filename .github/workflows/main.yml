@@ -35,7 +35,7 @@ jobs:
     - name: Create RDP User with Clean Password
       run: |
         $randDigits = Get-Random -Minimum 100000 -Maximum 999999
-        $password = "CloudRdp${randDigits}!"
+        $password = "ArtemisPass${randDigits}!"
         $secure   = ConvertTo-SecureString $password -AsPlainText -Force
 
         New-LocalUser -Name "RDP" -Password $secure -AccountNeverExpires

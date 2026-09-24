@@ -23,30 +23,19 @@ jobs:
         Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
           -Name "SecurityLayer" -Value 0 -Force
 
+        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+          -Name "fPromptForPassword" -Value 0 -Force
+
         netsh advfirewall firewall delete rule name="RDP-Tailscale"
         netsh advfirewall firewall add rule name="RDP-Tailscale" `
           dir=in action=allow protocol=TCP localport=3389
 
         Restart-Service -Name TermService -Force
 
-    - name: Create RDP User with Secure Password
+    - name: Create RDP User with Clean Password
       run: |
-        Add-Type -AssemblyName System.Security
-
-        $charSet = @{
-          Upper   = [char[]](65..90)
-          Lower   = [char[]](97..122)
-          Number  = [char[]](48..57)
-          Special = ([char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126))
-        }
-
-        $raw = @()
-        $raw += $charSet.Upper   | Get-Random -Count 4
-        $raw += $charSet.Lower   | Get-Random -Count 4
-        $raw += $charSet.Number  | Get-Random -Count 4
-        $raw += $charSet.Special | Get-Random -Count 4
-
-        $password = ($raw | Get-Random -Count $raw.Count) -join ''
+        $randDigits = Get-Random -Minimum 100000 -Maximum 999999
+        $password = "CloudRdp${randDigits}!"
         $secure   = ConvertTo-SecureString $password -AsPlainText -Force
 
         New-LocalUser -Name "RDP" -Password $secure -AccountNeverExpires
@@ -57,6 +46,10 @@ jobs:
           Write-Error "User creation failed"
           exit 1
         }
+
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "AutoAdminLogon" -Value "1" -Force
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "DefaultUserName" -Value "RDP" -Force
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "DefaultPassword" -Value $password -Force
 
         echo "RDP_PASS=$password" >> $env:GITHUB_ENV
         echo "RDP_CREDS=RDP / $password" >> $env:GITHUB_ENV
@@ -112,6 +105,7 @@ jobs:
         git clone https://github.com/Mikej81/WebRDP.git C:\WebRDP
         cd C:\WebRDP
         npm install --omit=dev
+        $env:LISTEN_IP = "0.0.0.0"
         $env:LISTEN_PORT = "4200"
         Start-Process -FilePath "node" -ArgumentList "app.js" -WorkingDirectory "C:\WebRDP" -WindowStyle Hidden
         Start-Sleep -Seconds 5

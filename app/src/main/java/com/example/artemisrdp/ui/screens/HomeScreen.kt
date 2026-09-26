@@ -139,7 +139,7 @@ fun HomeScreen(
             val targetWebUrl = active.webUrl ?: "http://${active.host}:4200/rdp/host/127.0.0.1"
             val cloudConn = RdpConnection(
                 id = "cloud_rdp_github",
-                name = "5-Hour Cloud PC (Windows 11)",
+                name = "Cloud PC (Windows 11)",
                 host = active.host,
                 port = active.port,
                 username = active.username,
@@ -232,7 +232,7 @@ fun HomeScreen(
                         val targetWebUrl = session.webUrl ?: "http://${session.host}:4200/rdp/host/127.0.0.1"
                         val cloudConn = RdpConnection(
                             id = "cloud_rdp_github",
-                            name = "5-Hour Cloud PC (Windows 11)",
+                            name = "Cloud PC (Windows 11)",
                             host = session.host,
                             port = session.port,
                             username = session.username,
@@ -464,7 +464,7 @@ fun CloudRdpCard(
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
                         Text(
-                            text = "5-Hour Cloud PC",
+                            text = "Cloud PC",
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp,
                             color = Color.White

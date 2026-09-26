@@ -127,16 +127,21 @@ jobs:
         Write-Host "TCP connectivity successful!"
 
     - name: Start Web RDP Gateway
+      continue-on-error: true
       run: |
-        netsh advfirewall firewall add rule name="WebRDP-Port" dir=in action=allow protocol=TCP localport=4200
-        git clone https://github.com/Mikej81/WebRDP.git C:\WebRDP
-        cd C:\WebRDP
-        npm install --omit=dev
-        $env:LISTEN_IP = "0.0.0.0"
-        $env:LISTEN_PORT = "4200"
-        Start-Process -FilePath "node" -ArgumentList "app.js" -WorkingDirectory "C:\WebRDP" -WindowStyle Hidden
-        Start-Sleep -Seconds 5
-        Write-Host "Web RDP Gateway started successfully on port 4200"
+        try {
+          netsh advfirewall firewall add rule name="WebRDP-Port" dir=in action=allow protocol=TCP localport=4200
+          git clone --depth 1 https://github.com/Mikej81/WebRDP.git C:\WebRDP
+          cd C:\WebRDP
+          npm install --omit=dev --no-audit --no-fund
+          $env:LISTEN_IP = "0.0.0.0"
+          $env:LISTEN_PORT = "4200"
+          Start-Process -FilePath "node" -ArgumentList "app.js" -WorkingDirectory "C:\WebRDP" -WindowStyle Hidden
+          Start-Sleep -Seconds 3
+          Write-Host "Web RDP Gateway started on port 4200"
+        } catch {
+          Write-Warning "Web RDP Gateway skipped: $_"
+        }
 
     - name: Maintain Connection
       env:

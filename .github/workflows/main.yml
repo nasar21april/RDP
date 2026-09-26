@@ -7,10 +7,6 @@ permissions:
   contents: read
   issues: write
 
-concurrency:
-  group: artemis-rdp-runner
-  cancel-in-progress: true
-
 jobs:
   secure-rdp:
     runs-on: windows-latest

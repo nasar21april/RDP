@@ -43,15 +43,17 @@ jobs:
         Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
           -Name "fDenyTSConnections" -Value 0 -Force
 
+        # Set SecurityLayer = 1 (Negotiate SSL/TLS) and enable both NLA and non-NLA
+        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+          -Name "SecurityLayer" -Value 1 -Force
+
         Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
           -Name "UserAuthentication" -Value 0 -Force
 
         Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
-          -Name "SecurityLayer" -Value 0 -Force
-
-        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
           -Name "fPromptForPassword" -Value 0 -Force
 
+        # Ensure RDP port is open across all firewall profiles
         netsh advfirewall firewall delete rule name="RDP-Tailscale"
         netsh advfirewall firewall add rule name="RDP-Tailscale" `
           dir=in action=allow protocol=TCP localport=3389

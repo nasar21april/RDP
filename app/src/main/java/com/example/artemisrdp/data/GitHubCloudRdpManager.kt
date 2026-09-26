@@ -274,6 +274,13 @@ class GitHubCloudRdpManager(context: Context) {
             return@withContext Result.failure(IllegalStateException(err))
         }
 
+        // Check if an existing server is already active or running
+        val existingSession = checkActiveServer()
+        if (existingSession != null && !existingSession.isExpired) {
+            _status.value = CloudServerStatus.Ready(existingSession)
+            return@withContext Result.success(existingSession)
+        }
+
         try {
             _status.value = CloudServerStatus.Triggering("Dispatching GitHub Actions workflow '$workflow'...")
             val dispatchSuccess = triggerWorkflowDispatch()

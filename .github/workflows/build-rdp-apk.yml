@@ -54,18 +54,18 @@ jobs:
       - name: Publish or Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "v1.1"
-          name: "RDP v1.1 — Auto Password Fill & Smooth Updates"
+          tag_name: "v1.2"
+          name: "RDP v1.2 — Tailscale Active Reminder & Duplicate Session Guard"
           body: |
-            ### 🚀 RDP v1.1 Release
+            ### 🚀 RDP v1.2 Release
             
             **Direct Android APK Download:**
             Download `RDP.apk` below directly to your phone and install.
             
-            **What's New in v1.1:**
-            - **Auto-Fill Password**: Automatically fills the session password and clicks Continue on the Microsoft Windows App prompt!
-            - **Seamless In-Place Updates**: Version code bumped to 2 for 1-tap update installation over existing app.
-            - **Stability & Keep-Alive**: Prevents runners from cancelling mid-setup.
+            **What's New in v1.2:**
+            - **Tailscale Active Check & Reminder**: A popup reminder before connecting ensuring Tailscale is turned ON with a direct 1-tap "Open Tailscale" shortcut to avoid Error 0x204.
+            - **Duplicate Workflow Guard**: Prevents launching a 2nd runner if a cloud session is already active or in progress.
+            - **Auto Password Fill**: Pre-copies and types password for the Windows App / RD Client.
           files: release_assets/RDP.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

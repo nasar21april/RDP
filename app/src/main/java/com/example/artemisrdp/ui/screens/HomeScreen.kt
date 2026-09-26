@@ -127,6 +127,8 @@ fun HomeScreen(
     var showQuickConnectDialog by remember { mutableStateOf(false) }
     var showCloudSettingsDialog by remember { mutableStateOf(false) }
     var showManualCredsDialog by remember { mutableStateOf(false) }
+    var showTailscalePromptDialog by remember { mutableStateOf(false) }
+    var pendingConnectAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     var connectionToDelete by remember { mutableStateOf<RdpConnection?>(null) }
     val filteredConnections = connections.filter {
         it.name.contains(searchQuery, ignoreCase = true) ||
@@ -228,24 +230,55 @@ fun HomeScreen(
                         }
                     },
                     onConnectSession = { session ->
-                        // Save connection with live webUrl for in-app desktop viewer
-                        val targetWebUrl = session.webUrl ?: "http://${session.host}:4200/rdp/host/127.0.0.1"
-                        val cloudConn = RdpConnection(
-                            id = "cloud_rdp_github",
-                            name = "Cloud PC (Windows 11)",
-                            host = session.host,
-                            port = session.port,
-                            username = session.username,
-                            password = session.password,
-                            iconColorHex = 0xFF00E676L,
-                            isDemo = false,
-                            webUrl = targetWebUrl
-                        )
-                        coroutineScope.launch {
-                            repository.saveConnection(cloudConn)
+                        pendingConnectAction = {
+                            val targetWebUrl = session.webUrl ?: "http://${session.host}:4200/rdp/host/127.0.0.1"
+                            val cloudConn = RdpConnection(
+                                id = "cloud_rdp_github",
+                                name = "Cloud PC (Windows 11)",
+                                host = session.host,
+                                port = session.port,
+                                username = session.username,
+                                password = session.password,
+                                iconColorHex = 0xFF00E676L,
+                                isDemo = false,
+                                webUrl = targetWebUrl
+                            )
+                            coroutineScope.launch {
+                                repository.saveConnection(cloudConn)
+                            }
+                            onConnect(cloudConn.id)
                         }
-                        // Open full desktop viewer directly inside the Artemis app!
-                        onConnect(cloudConn.id)
+                        showTailscalePromptDialog = true
+                    },
+                    onLaunchWindowsApp = { session ->
+                        pendingConnectAction = {
+                            try {
+                                clipboardManager.setText(AnnotatedString(session.password))
+                                val automationReady = RdpAutomationService.isRunning
+                                if (automationReady) {
+                                    val automationIntent = Intent(RdpAutomationService.ACTION_TRIGGER)
+                                        .setPackage(context.packageName)
+                                        .putExtra(RdpAutomationService.EXTRA_HOST, session.host)
+                                        .putExtra(RdpAutomationService.EXTRA_USERNAME, session.username)
+                                        .putExtra(RdpAutomationService.EXTRA_PASSWORD, session.password)
+                                    context.sendBroadcast(automationIntent)
+                                }
+                                val rdpUri = Uri.parse("rdp://full%20address=s:${session.host}:${session.port}&username=s:${session.username}")
+                                val intent = Intent(Intent.ACTION_VIEW, rdpUri).apply {
+                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                }
+                                context.startActivity(intent)
+                                val message = if (automationReady) {
+                                    "Opening Windows App and entering the session credentials…"
+                                } else {
+                                    "Opening Windows App. Enable RDP Auto-Connect in Accessibility settings to fill credentials automatically."
+                                }
+                                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "Could not launch Windows App: ${e.message}", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        showTailscalePromptDialog = true
                     },
                     onResetSession = {
                         coroutineScope.launch {
@@ -391,6 +424,81 @@ fun HomeScreen(
             }
         )
     }
+
+    // Tailscale Reminder Dialog
+    if (showTailscalePromptDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showTailscalePromptDialog = false
+                pendingConnectAction = null
+            },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Cloud,
+                    contentDescription = null,
+                    tint = Color(0xFF00E676),
+                    modifier = Modifier.size(36.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = "Ensure Tailscale is Active",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+            },
+            text = {
+                Text(
+                    text = "This Cloud PC connects via your private Tailscale network.\n\nPlease make sure Tailscale is turned ON (Connected) on this device before connecting to avoid 'Unable to connect' (0x204) errors.",
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showTailscalePromptDialog = false
+                        pendingConnectAction?.invoke()
+                        pendingConnectAction = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676))
+                ) {
+                    Text("I'm Connected, Open PC", color = Color.Black, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            try {
+                                val pm = context.packageManager
+                                val launchIntent = pm.getLaunchIntentForPackage("com.tailscale.ipn")
+                                if (launchIntent != null) {
+                                    context.startActivity(launchIntent)
+                                } else {
+                                    val playStoreIntent = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.tailscale.ipn")).apply {
+                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                    }
+                                    context.startActivity(playStoreIntent)
+                                }
+                            } catch (_: Exception) {}
+                        }
+                    ) {
+                        Text("Open Tailscale")
+                    }
+                    TextButton(
+                        onClick = {
+                            showTailscalePromptDialog = false
+                            pendingConnectAction = null
+                        }
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -404,6 +512,7 @@ fun CloudRdpCard(
     onManualCreds: () -> Unit,
     onStartServer: () -> Unit,
     onConnectSession: (CloudSession) -> Unit,
+    onLaunchWindowsApp: (CloudSession) -> Unit,
     onResetSession: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -845,33 +954,7 @@ fun CloudRdpCard(
 
                     // 2. Launch in External Windows App
                     OutlinedButton(
-                        onClick = {
-                            try {
-                                clipboardManager.setText(AnnotatedString(session.password))
-                                val automationReady = RdpAutomationService.isRunning
-                                if (automationReady) {
-                                    val automationIntent = Intent(RdpAutomationService.ACTION_TRIGGER)
-                                        .setPackage(context.packageName)
-                                        .putExtra(RdpAutomationService.EXTRA_HOST, session.host)
-                                        .putExtra(RdpAutomationService.EXTRA_USERNAME, session.username)
-                                        .putExtra(RdpAutomationService.EXTRA_PASSWORD, session.password)
-                                    context.sendBroadcast(automationIntent)
-                                }
-                                val rdpUri = Uri.parse("rdp://full%20address=s:${session.host}:${session.port}&username=s:${session.username}")
-                                val intent = Intent(Intent.ACTION_VIEW, rdpUri).apply {
-                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                                }
-                                context.startActivity(intent)
-                                val message = if (automationReady) {
-                                    "Opening Windows App and entering the session credentials…"
-                                } else {
-                                    "Opening Windows App. Enable RDP Auto-Connect in Accessibility settings to fill credentials automatically."
-                                }
-                                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
-                            } catch (e: Exception) {
-                                Toast.makeText(context, "Could not launch Windows App: ${e.message}", Toast.LENGTH_SHORT).show()
-                            }
-                        },
+                        onClick = { onLaunchWindowsApp(session) },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(

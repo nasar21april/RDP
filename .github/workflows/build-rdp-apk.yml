@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
+    tags:
+      - "v*"
     paths:
       - "app/**"
       - "gradle/**"
@@ -14,7 +16,7 @@ on:
       - ".github/workflows/build-rdp-apk.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -37,9 +39,33 @@ jobs:
         run: ./gradlew assembleDebug --no-daemon
         working-directory: .
 
+      - name: Prepare APK for Release
+        run: |
+          mkdir -p release_assets
+          cp app/build/outputs/apk/debug/app-debug.apk release_assets/Artemis-RDP.apk
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: Artemis-RDP-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: release_assets/Artemis-RDP.apk
           retention-days: 30
+
+      - name: Publish or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v1.0"
+          name: "Artemis RDP v1.0 — Android Remote Desktop"
+          body: |
+            ### 🚀 Artemis RDP v1.0 Release
+            
+            **Direct Android APK Download:**
+            Download `Artemis-RDP.apk` below directly to your phone and install.
+            
+            **Features:**
+            - One-click Windows Cloud PC launcher powered by GitHub Actions & Tailscale.
+            - Fast Jetpack Compose UI with interactive trackpad, special keys bar, and touch navigation.
+            - Real-time cloud runner progress & timer tracking.
+          files: release_assets/Artemis-RDP.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -9,6 +9,7 @@ on:
       - "gradle/**"
       - "gradlew"
       - "build.gradle.kts"
+      - "gradle.properties"
       - "settings.gradle.kts"
       - ".github/workflows/build-rdp-apk.yml"
 

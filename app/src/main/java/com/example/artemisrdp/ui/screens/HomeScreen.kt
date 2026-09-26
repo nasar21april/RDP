@@ -118,6 +118,7 @@ fun HomeScreen(
 ) {
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
     val connections by repository.connections.collectAsState()
     val cloudStatus by cloudManager.status.collectAsState()
     val steps by cloudManager.steps.collectAsState()

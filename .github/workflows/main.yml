@@ -124,24 +124,7 @@ jobs:
 
         Write-Host "TCP connectivity successful!"
 
-    - name: Start Web RDP Gateway
-      continue-on-error: true
-      run: |
-        try {
-          netsh advfirewall firewall add rule name="WebRDP-Port" dir=in action=allow protocol=TCP localport=4200
-          git clone --depth 1 https://github.com/Mikej81/WebRDP.git C:\WebRDP
-          cd C:\WebRDP
-          npm install --omit=dev --no-audit --no-fund
-          $env:LISTEN_IP = "0.0.0.0"
-          $env:LISTEN_PORT = "4200"
-          Start-Process -FilePath "node" -ArgumentList "app.js" -WorkingDirectory "C:\WebRDP" -WindowStyle Hidden
-          Start-Sleep -Seconds 3
-          Write-Host "Web RDP Gateway started on port 4200"
-        } catch {
-          Write-Warning "Web RDP Gateway skipped: $_"
-        }
-
-    - name: Maintain Connection
+    - name: Announce and Maintain Connection
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         GH_REPO: ${{ github.repository }}
@@ -166,7 +149,22 @@ jobs:
         } | ConvertTo-Json
         Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/issues" -Headers $headers -Method Post -Body $newJson -ContentType "application/json" | Out-Null
 
+        # Background start Web RDP without blocking
+        Start-Job -ScriptBlock {
+          try {
+            netsh advfirewall firewall add rule name="WebRDP-Port" dir=in action=allow protocol=TCP localport=4200
+            if (-not (Test-Path "C:\WebRDP")) {
+              git clone --depth 1 https://github.com/Mikej81/WebRDP.git C:\WebRDP
+              cd C:\WebRDP
+              npm install --omit=dev --no-audit --no-fund
+            }
+            $env:LISTEN_IP = "0.0.0.0"
+            $env:LISTEN_PORT = "4200"
+            Start-Process -FilePath "node" -ArgumentList "app.js" -WorkingDirectory "C:\WebRDP" -WindowStyle Hidden
+          } catch {}
+        } | Out-Null
+
         while ($true) {
-          Write-Host "[$(Get-Date)] RDP Active - Ctrl+C to stop"
+          Write-Host "[$(Get-Date)] Artemis RDP Active - Ctrl+C to stop"
           Start-Sleep 300
         }

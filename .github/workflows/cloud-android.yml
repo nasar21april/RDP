@@ -21,7 +21,8 @@ jobs:
           curl -fsSL https://tailscale.com/install.sh | sh
           TS_KEY="${{ secrets.TAILSCALE_AUTH_KEY }}"
           if [ -z "$TS_KEY" ]; then
-            TS_KEY="tskey-auth-kt3BpdbNy211CNTRL-Y7t9xXevT35S1siKBBrr35jpf3yWe7nT"
+            echo "::error::Configure the TAILSCALE_AUTH_KEY repository secret first."
+            exit 1
           fi
           sudo tailscale up --authkey="$TS_KEY" --hostname=github-android --accept-routes
 

@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">RDP</string>
+    <string name="quick_connect">Quick Connect</string>
+    <string name="saved_connections">Saved Remote PCs</string>
+    <string name="add_connection">Add PC</string>
+    <string name="edit_connection">Edit Connection</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="accessibility_service_description">Automates Windows App setup for cloud RDP connections — handles adding PC, credentials and connecting automatically.</string>
+</resources>

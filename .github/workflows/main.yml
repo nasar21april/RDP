@@ -2,16 +2,42 @@ name: RDP
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: artemis-rdp-runner
+  cancel-in-progress: true
 
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 3600
+    timeout-minutes: 360
 
     steps:
+    - name: Close previous RDP session announcements
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        $headers = @{
+          "Authorization" = "Bearer $env:GH_TOKEN"
+          "Accept"        = "application/vnd.github+json"
+          "User-Agent"    = "RDP-Runner"
+        }
+        $labels = Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/labels?per_page=100" -Headers $headers
+        if (-not ($labels | Where-Object { $_.name -eq "rdp-active" })) {
+          $labelJson = @{ name = "rdp-active"; color = "00E676"; description = "Active Artemis RDP session" } | ConvertTo-Json
+          Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/labels" -Headers $headers -Method Post -Body $labelJson -ContentType "application/json" | Out-Null
+        }
+        $oldIssues = Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/issues?state=open&labels=rdp-active&per_page=100" -Headers $headers
+        foreach ($old in $oldIssues) {
+          $closeJson = @{ state = "closed" } | ConvertTo-Json
+          Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/issues/$($old.number)" -Headers $headers -Method Patch -Body $closeJson -ContentType "application/json" | Out-Null
+        }
+
     - name: Configure Core RDP Settings
       run: |
         Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
@@ -70,7 +96,8 @@ jobs:
       env:
         TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
       run: |
-        $key = if ($env:TAILSCALE_AUTH_KEY) { $env:TAILSCALE_AUTH_KEY } else { "tskey-auth-kt3BpdbNy211CNTRL-Y7t9xXevT35S1siKBBrr35jpf3yWe7nT" }
+        $key = $env:TAILSCALE_AUTH_KEY
+        if (-not $key) { throw "Configure the TAILSCALE_AUTH_KEY repository secret before starting the runner." }
         & "C:\Program Files\Tailscale\tailscale.exe" up `
           --authkey=$key `
           --hostname=github-rdp `
@@ -128,20 +155,13 @@ jobs:
           "Accept"        = "application/vnd.github.v3+json"
           "User-Agent"    = "RDP-Runner"
         }
-        try {
-          $openIssues = Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/issues?state=open&labels=rdp-active" -Headers $headers
-          foreach ($old in $openIssues) {
-            $closeJson = @{ state = "closed" } | ConvertTo-Json
-            Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/issues/$($old.number)" -Headers $headers -Method Patch -Body $closeJson | Out-Null
-          }
-          $body = "Host: $env:TAILSCALE_IP`nPort: 3389`nUsername: RDP`nPassword: $env:RDP_PASS`nWebUrl: http://$($env:TAILSCALE_IP):4200/rdp/host/127.0.0.1`nStartedAt: $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')"
-          $newJson = @{
-            title  = "RDP_SESSION_ACTIVE"
-            body   = $body
-            labels = @("rdp-active")
-          } | ConvertTo-Json
-          Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/issues" -Headers $headers -Method Post -Body $newJson | Out-Null
-        } catch {}
+        $body = "Host: $env:TAILSCALE_IP`nPort: 3389`nUsername: RDP`nPassword: $env:RDP_PASS`nWebUrl: http://$($env:TAILSCALE_IP):4200/rdp/host/127.0.0.1`nStartedAt: $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')"
+        $newJson = @{
+          title  = "RDP_SESSION_ACTIVE"
+          body   = $body
+          labels = @("rdp-active")
+        } | ConvertTo-Json
+        Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GH_REPO/issues" -Headers $headers -Method Post -Body $newJson -ContentType "application/json" | Out-Null
 
         while ($true) {
           Write-Host "[$(Get-Date)] RDP Active - Ctrl+C to stop"

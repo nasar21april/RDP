@@ -103,9 +103,53 @@ class RdpAutomationService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        // We do not let events rush our sequential timing.
-        // We log them for debugging.
-        if (!workflowActive) return
+        if (pendingPassword.isBlank()) return
+        val root = rootInActiveWindow ?: return
+        try {
+            val pkg = root.packageName?.toString() ?: ""
+            if (pkg != WINDOWS_APP_PKG) return
+
+            // Check if this is the "Enter Your User Account" dialog prompt
+            val hasUserAccountPrompt = hasText(root, "Enter Your User Account") ||
+                    (hasText(root, "PASSWORD") && (hasText(root, "CONTINUE") || hasText(root, "Continue")))
+
+            if (hasUserAccountPrompt) {
+                // Find password EditText
+                val passField = findEditTextByLabel(root, listOf("PASSWORD", "Password"))
+                    ?: nthEditText(root, 1)
+                    ?: firstEditText(root)
+
+                if (passField != null) {
+                    val currentText = passField.text?.toString() ?: ""
+                    if (currentText.isBlank()) {
+                        Log.i(TAG, "Auto-filling password into 'Enter Your User Account' dialog")
+                        setText(passField, pendingPassword)
+                        handler.postDelayed({
+                            val r2 = rootInActiveWindow ?: return@postDelayed
+                            try {
+                                val continueBtn = findByText(r2, "CONTINUE")
+                                    ?: findByText(r2, "Continue")
+                                    ?: findByText(r2, "CONNECT")
+                                    ?: findByText(r2, "Connect")
+                                continueBtn?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            } finally {
+                                r2.recycle()
+                            }
+                        }, 300)
+                    }
+                }
+            }
+
+            // Also auto-confirm certificate prompt if it appears
+            if (hasText(root, "verified") || hasText(root, "certificate") || hasText(root, "Certificate")) {
+                findByText(root, "Never ask again")?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                (findByText(root, "CONNECT") ?: findByText(root, "Connect"))?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling accessibility event: ${e.message}")
+        } finally {
+            root.recycle()
+        }
     }
 
     private fun schedule(nextStep: Step, delayMs: Long) {
